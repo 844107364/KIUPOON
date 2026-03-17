@@ -1,9 +1,9 @@
 {
   "name": "localminidrama-desktop",
   "version": "1.2.2",
-  "description": "LocalMiniDrama 本地桌面客户端",
+  "description": "DramaGen AI 桌面客户端",
   "main": "main.js",
-  "author": "LocalMiniDrama",
+  "author": "DramaGen AI",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
@@ -32,8 +32,8 @@
   },
   "build": {
     "appId": "com.localminidrama.desktop",
-    "productName": "本地短剧助手",
-    "artifactName": "LocalMiniDrama ${version}.${ext}",
+    "productName": "DramaGen AI",
+    "artifactName": "DramaGen AI ${version}.${ext}",
     "directories": {
       "output": "release"
     },
