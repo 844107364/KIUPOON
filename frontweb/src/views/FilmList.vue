@@ -3,8 +3,8 @@
     <header class="header">
       <div class="header-inner">
         <h1 class="logo">
-          <span class="logo-main">本地短剧助手</span>
-          <span class="logo-sub">LocalMiniDrama</span>
+          <span class="logo-main">短剧助手 - 智算AI</span>
+          <span class="logo-sub">DramaGen AI</span>
         </h1>
         <!-- 公共资源库（左侧，靛紫调） -->
         <div class="header-library">
