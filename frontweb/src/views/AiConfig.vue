@@ -4,7 +4,7 @@
       <div class="header-inner">
         <h1 class="logo" @click="goList">
           <span class="logo-main">短剧助手 - 智算AI</span>
-          <span class="logo-sub">LocalMiniDrama</span>
+          <span class="logo-sub">DramaGen AI</span>
         </h1>
         <span class="page-title">AI 配置</span>
         <el-button class="btn-back" @click="goList">
