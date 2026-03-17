@@ -3,7 +3,7 @@
     <header class="header">
       <div class="header-inner">
         <h1 class="logo" @click="goList">
-          <span class="logo-main">本地短剧助手</span>
+          <span class="logo-main">短剧助手 - 智算AI</span>
           <span class="logo-sub">LocalMiniDrama</span>
         </h1>
         <span class="page-title">AI 配置</span>
