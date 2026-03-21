@@ -7,8 +7,8 @@ const uploadService = require('./uploadService');
 const taskService = require('./taskService');
 const { loadConfig } = require('../config');
 
-// 多参考图时注入到所有支持 negative_prompt 的模型，防止生成分割/拼贴布局
-const ANTI_SPLIT_NEGATIVE_PROMPT = 'split panels, side-by-side layout, collage, diptych, triptych, grid layout, multiple panels, comparison view, composite image, two images in one frame';
+// 多参考图时注入到所有支持 negative_prompt 的模型，防止生成分割/拼贴布局；同时加入安全词以减少敏感拦截
+const ANTI_SPLIT_NEGATIVE_PROMPT = 'nsfw, nudity, naked, violence, blood, gore, sensitive content, split panels, side-by-side layout, collage, diptych, triptych, grid layout, multiple panels, comparison view, composite image, two images in one frame';
 
 // sharp 惰性加载（参考图压缩用，sharp 已在 package.json 中声明）
 let _sharp = null;
@@ -365,7 +365,7 @@ async function callKlingImageApi(config, log, opts) {
     ? (config.query_endpoint.startsWith('/') ? config.query_endpoint : '/' + config.query_endpoint)
     : '';
   function buildKlingQueryUrl(tid) {
-    if (cfgQEp) return base + cfgQEp.replace(/\{taskId\}/gi, encodeURIComponent(tid)).replace(/\{task_id\}/gi, encodeURIComponent(tid));
+    if (cfgQEp) return base + cfgQEp.replace(/\{taskId\}/gi, encodeURIComponent(tid)).replace(/\{task_id\}/gi, encodeURIComponent(tid)).replace(/\{id\}/gi, encodeURIComponent(tid));
     return base + ep + '/' + encodeURIComponent(tid);
   }
 
@@ -550,38 +550,83 @@ async function callNanoBananaImageApi(config, log, opts) {
   }
 
   // 构建轮询 URL：优先用配置的 query_endpoint，否则用默认
+  // 支持占位符 {taskId} / {taskid} / {task_id} / {id}（大小写不敏感）
   const DEFAULT_QUERY_EP = '/api/v1/nanobanana/record-info';
   const cfgQEp = config.query_endpoint
     ? (config.query_endpoint.startsWith('/') ? config.query_endpoint : '/' + config.query_endpoint)
     : '';
   const useQueryEp = cfgQEp && cfgQEp !== DEFAULT_QUERY_EP ? cfgQEp : DEFAULT_QUERY_EP;
   function buildQueryUrl(tid) {
-    if (useQueryEp.includes('{taskId}')) return base + useQueryEp.replace('{taskId}', encodeURIComponent(tid));
+    // 大小写不敏感替换所有常见占位符：{taskId} / {taskid} / {task_id} / {id}
+    if (/\{(taskId|taskid|task_id|id)\}/i.test(useQueryEp)) {
+      return base + useQueryEp
+        .replace(/\{taskId\}/gi, encodeURIComponent(tid))
+        .replace(/\{task_id\}/gi, encodeURIComponent(tid))
+        .replace(/\{id\}/gi, encodeURIComponent(tid));
+    }
     return base + useQueryEp + '?taskId=' + encodeURIComponent(tid);
   }
 
-  log.info('NanoBanana task submitted, polling…', { image_gen_id, task_id: taskId, query_ep: useQueryEp });
+  const firstQueryUrl = buildQueryUrl(taskId);
+  log.info('NanoBanana task submitted, polling…', {
+    image_gen_id, task_id: taskId,
+    query_ep: useQueryEp,
+    first_query_url: firstQueryUrl,
+    config_query_endpoint: config.query_endpoint || '(not set)',
+  });
   const maxAttempts = 60;
   const intervalMs = 3000;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise((r) => setTimeout(r, intervalMs));
+    const pollUrl = buildQueryUrl(taskId);
     try {
-      const queryRes = await fetch(buildQueryUrl(taskId), {
+      const queryRes = await fetch(pollUrl, {
         method: 'GET',
         headers,
       });
-      if (!queryRes.ok) continue;
-      const queryData = JSON.parse(await queryRes.text());
+      const queryRaw = await queryRes.text();
+      if (!queryRes.ok) {
+        log.warn('NanoBanana poll HTTP error', {
+          image_gen_id, task_id: taskId, attempt,
+          poll_url: pollUrl,
+          status: queryRes.status,
+          body_preview: queryRaw.slice(0, 300),
+        });
+        continue;
+      }
+      let queryData;
+      try {
+        queryData = JSON.parse(queryRaw);
+      } catch (parseErr) {
+        log.warn('NanoBanana poll JSON parse error', {
+          image_gen_id, task_id: taskId, attempt,
+          poll_url: pollUrl,
+          raw_preview: queryRaw.slice(0, 300),
+        });
+        continue;
+      }
       const successFlag = queryData?.data?.successFlag;
-      const state = queryData?.data?.state; // 兼容 state="succeeded"/"failed"/"pending" 格式
-      if (successFlag === 1 || state === 'succeeded') {
+      const state = queryData?.data?.state;
+      const status = queryData?.data?.status;
+      log.info('NanoBanana poll status', {
+        image_gen_id, task_id: taskId, attempt,
+        code: queryData?.code, successFlag, state, status,
+      });
+      if (successFlag === 1 || state === 'succeeded' || status === '3') {
         const imageUrl = queryData?.data?.response?.resultImageUrl
           || queryData?.data?.response?.originImageUrl
-          || queryData?.data?.data?.images?.[0]?.url; // 兼容 {data:{data:{images:[{url}]}}} 格式
+          || queryData?.data?.data?.images?.[0]?.url;
         if (imageUrl) {
-          log.info('NanoBanana image completed', { image_gen_id, task_id: taskId });
+          log.info('NanoBanana image completed', { image_gen_id, task_id: taskId, image_url: imageUrl.slice(0, 120) });
           return { image_url: imageUrl };
         }
+        log.warn('NanoBanana succeeded but no image URL found', {
+          image_gen_id, task_id: taskId,
+          data_keys: queryData?.data ? Object.keys(queryData.data) : [],
+          nested_data_keys: queryData?.data?.data ? Object.keys(queryData.data.data) : [],
+          response_keys: queryData?.data?.response ? Object.keys(queryData.data.response) : [],
+          raw_preview: queryRaw.slice(0, 500),
+        });
         return { error: '未返回图片地址' };
       }
       if (successFlag === 2 || successFlag === 3 || state === 'failed') {
@@ -589,9 +634,8 @@ async function callNanoBananaImageApi(config, log, opts) {
         log.warn('NanoBanana task failed', { image_gen_id, task_id: taskId, successFlag, state, error_message: errMsg });
         return { error: 'NanoBanana 生成失败: ' + errMsg };
       }
-      // successFlag === 0 / state = 'pending'|'processing'：生成中，继续轮询
     } catch (e) {
-      log.warn('NanoBanana poll request failed', { attempt, error: e.message, image_gen_id });
+      log.warn('NanoBanana poll request failed', { attempt, error: e.message, image_gen_id, poll_url: pollUrl });
     }
   }
   return { error: 'NanoBanana 图片生成超时' };
@@ -1222,7 +1266,9 @@ async function callImageApi(db, log, opts) {
 
   // 多参考图时统一生成 negative_prompt（供各子函数使用）
   const refCountForNeg = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean).length : 0;
-  const autoNegativePrompt = refCountForNeg > 1 ? ANTI_SPLIT_NEGATIVE_PROMPT : '';
+  // Seedream/Volcengine 模型强制启用安全词负面提示，其他模型仅在多参考图时启用
+  const isVolcOrSeedream = (protocol === 'volcengine' || /seedream|doubao/i.test(model));
+  const autoNegativePrompt = (refCountForNeg > 1 || isVolcOrSeedream) ? ANTI_SPLIT_NEGATIVE_PROMPT : '';
 
   if (protocol === 'dashscope') {
     return callDashScopeImageApi(config, log, {
@@ -1291,7 +1337,7 @@ async function callImageApi(db, log, opts) {
     ...((isVolc || isSeedream) ? { watermark: false } : {}),
     // 多张参考图时加 negative_prompt，防止模型把参考图拼成左右分割的合图
     // Doubao/Seedream 原生支持；通用 OpenAI-compat 接口大多也会接受该字段（不支持的会忽略）
-    ...(resolvedRefs.length > 1 ? { negative_prompt: autoNegativePrompt } : {}),
+    ...(autoNegativePrompt ? { negative_prompt: autoNegativePrompt } : {}),
     // 参考图字段：volcengine doubao-seedream API 规范使用 image（数组），见官方文档
     ...(resolvedRefs.length > 0 ? { image: resolvedRefs } : {}),
   };
